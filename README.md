@@ -21,7 +21,8 @@
   ![変換後](docs/screenshots/ime-converted.png)
 - **ノーマルモードで IME が邪魔しない**：挿入・置換・コマンドライン・ターミナルモード以外では
   IME を切り離すので、IME をオンにしたまま `Esc` しても `dd` や `:w` がそのまま効きます。
-  挿入モードに戻ると IME の状態（オン/オフ）が復元されます。
+  挿入モードに戻ると IME の状態（オン/オフ）が復元されます。`:` のコマンド入力では IME はオフで始まります
+  （`:w` が変換待ちにならないように）。いつ IME を使えるかは `g:ngw_ime` で細かく決めることもできます。
 - **全角・半角の正しい描画**：Neovim が決めたセル幅に必ず収めます。全角文字はセル 2 つ分に、
   `ambiwidth=single` で幅広に描かれる記号（○ ※ → など）はセル内に横縮小して描くので、
   はみ出しや描画の残骸が出ません。
@@ -151,6 +152,7 @@ if vim.g.ngw then
   vim.o.ambiwidth = 'double'              -- ○※→ などを全角幅で扱う（日本語なら推奨）
 
   -- vim.g.ngw_ime_off_on_leave = 1  -- 挿入モードを抜けたら IME を必ずオフに
+  -- vim.g.ngw_ime = false           -- IME を使える時を自分で決める（下の例）
   -- vim.g.ngw_ime_insert_only = 0   -- ノーマルモードでも IME を使う
   -- vim.g.ngw_clipboard = 0         -- 内蔵クリップボードを使わない
   -- vim.g.ngw_fullscreen = 1        -- 全画面（0 で戻る）
@@ -164,8 +166,23 @@ end
 | `linespace` | 行間 |
 | `g:ngw_ime_insert_only` | 既定 1。文字入力モード以外では IME を切り離す |
 | `g:ngw_ime_off_on_leave` | 既定 0。1 にすると挿入モードを抜けるたびに IME をオフ |
+| `g:ngw_ime` | 未設定ならモードで自動。`true` / `false` を入れるとその通りに IME をつなぐ / 切る（切るときは状態を覚え、次に `true` にしたとき戻す）。Neovide の `g:neovide_input_ime` と同じ使い方 |
 | `g:ngw_clipboard` | 既定 1。0 で内蔵プロバイダを無効化（`g:clipboard` を自分で設定した場合も無効） |
 | `g:ngw_fullscreen` | 1 で全画面、0 で元に戻す |
+
+`g:ngw_ime` の例（挿入モードと `/` `?` 検索のときだけ IME を使う）：
+
+```lua
+vim.g.ngw_ime = false
+vim.api.nvim_create_autocmd({ "InsertEnter", "InsertLeave", "CmdlineEnter", "CmdlineLeave" }, {
+  callback = function(args)
+    if args.event:match("^Cmdline") and not vim.tbl_contains({ "/", "?" }, vim.fn.expand("<afile>")) then
+      return
+    end
+    vim.g.ngw_ime = args.event:match("Enter$") ~= nil
+  end,
+})
+```
 
 キー操作：`Ctrl+Shift+V` でクリップボードを貼り付け（ターミナルと同じ。挿入・コマンドラインどちらでも）。
 ウィンドウを閉じると `:confirm qall` 相当（未保存なら確認が出ます）。

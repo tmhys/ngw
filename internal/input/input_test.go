@@ -38,6 +38,8 @@ func TestChordKey(t *testing.T) {
 		{'6', ModCtrl, "<C-^>"},
 		{'^', ModCtrl, "<C-^>"},
 		{'@', ModCtrl, "<C-@>"},
+		{'-', ModCtrl, "<C-->"}, // as Neovide and nvim-qt send it (zoom mappings)
+		{'=', ModCtrl, "<C-=>"},
 		{'[', ModCtrl, "<C-[>"},
 		{'\\', ModCtrl, "<C-Bslash>"},
 		{'a', 0, ""},

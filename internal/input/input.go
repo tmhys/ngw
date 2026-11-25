@@ -124,7 +124,7 @@ func ChordKey(ch rune, m Mod) string {
 			return "<C-^>"
 		case '2', '@':
 			return "<C-@>"
-		case '-', '_':
+		case '_':
 			return "<C-_>"
 		}
 	}

@@ -264,8 +264,9 @@ func (f *Fonts) search(text string, wide bool) int {
 	r, _ := utf8.DecodeRuneInString(text)
 	u := utf16.Encode([]rune(text))
 	if r > 0xFFFF {
-		// GetGlyphIndices cannot check characters outside the BMP.
-		return f.byName(astralFace(r))
+		// GetGlyphIndices cannot check characters outside the BMP: pick by
+		// what the font is for.
+		return f.astral(r)
 	}
 	try := func(i int) bool {
 		f.selectFace(f.faces[i], vRegular)
@@ -286,25 +287,51 @@ func (f *Fonts) search(text string, wide bool) int {
 	return 0 // GDI's own font linking may still find a glyph
 }
 
-func astralFace(r rune) string {
+// astral picks a face for a character outside the BMP, where glyphs
+// cannot be checked with GetGlyphIndices.
+func (f *Fonts) astral(r rune) int {
 	switch {
-	case r >= 0x1F000 && r <= 0x1FAFF:
-		return "Segoe UI Emoji"
 	case r >= 0xF0000:
-		return "Symbols Nerd Font Mono"
+		// Nerd Font icons (Material Design, U+F0000 and up): a Nerd
+		// Font among the chosen fonts first ("PlemolJP Console NF",
+		// "HackGen Console NF", ...), then the symbols-only Nerd Font.
+		for i, fc := range f.faces {
+			if isNerd(fc.name) {
+				return i
+			}
+		}
+	case r >= 0x1F000 && r <= 0x1FAFF:
+		if i, ok := f.find("Segoe UI Emoji", "Segoe UI Symbol"); ok {
+			return i
+		}
 	case r >= 0x20000 && r <= 0x3FFFF:
-		return "SimSun-ExtB"
-	}
-	return "Segoe UI Symbol"
-}
-
-func (f *Fonts) byName(name string) int {
-	for i, fc := range f.faces {
-		if strings.EqualFold(fc.name, name) {
+		// CJK extension B and later.
+		if i, ok := f.find("SimSun-ExtB", "SimSun-ExtG"); ok {
+			return i
+		}
+	default:
+		if i, ok := f.find("Segoe UI Symbol"); ok {
 			return i
 		}
 	}
 	return 0
+}
+
+func isNerd(name string) bool {
+	u := strings.ToUpper(name)
+	return strings.Contains(u, "NERD") || strings.HasSuffix(u, " NF") || strings.Contains(u, " NF ") ||
+		strings.HasSuffix(u, " NFM") || strings.HasSuffix(u, " NFP")
+}
+
+func (f *Fonts) find(names ...string) (int, bool) {
+	for _, n := range names {
+		for i, fc := range f.faces {
+			if strings.EqualFold(fc.name, n) {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // Advance returns the width GDI gives text in face i (regular).

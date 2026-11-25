@@ -78,13 +78,15 @@ type App struct {
 	ambiDouble           bool
 
 	// input method
-	imeInsertOnly bool
-	imeOffOnLeave bool
-	imeEnabled    bool
-	imeWasOpen    bool
-	pre           *preedit
-	preRect       win32.RECT
-	highSurrogate uint16
+	imeInsertOnly  bool
+	imeOffOnLeave  bool
+	imeEnabled     bool
+	imeWasOpen     bool
+	imeFromCmdline bool
+	imeForce       int8 // g:ngw_ime: 1 on, -1 off, 0 by mode
+	pre            *preedit
+	preRect        win32.RECT
+	highSurrogate  uint16
 
 	// mouse
 	button             string
@@ -456,6 +458,18 @@ func (a *App) setVar(params []any) {
 	case "ngw_ime_insert_only":
 		a.imeInsertOnly = params[1] == nil || truthy(params[1])
 		a.updateIME()
+	case "ngw_ime":
+		// Set from autocmds to decide exactly when the input method is
+		// usable (like Neovide's g:neovide_input_ime); unset: by mode.
+		switch {
+		case params[1] == nil:
+			a.imeForce = 0
+		case truthy(params[1]):
+			a.imeForce = 1
+		default:
+			a.imeForce = -1
+		}
+		a.updateIME()
 	case "ngw_ime_off_on_leave":
 		a.imeOffOnLeave = truthy(params[1])
 	case "ngw_fullscreen":
@@ -541,8 +555,10 @@ func wndProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 		if wp != 1 { // not minimized
 			a.maximized = wp == 2
 			a.resizeGrid()
-			// A new bitmap is drawn at once from the cells, without
-			// waiting for Neovim.
+			// Draw everything again from the cells, margins included,
+			// without waiting for Neovim: nothing drawn for another size
+			// can be left in the bitmap.
+			a.scr.MarkAllDirty()
 			a.r.drawDirty()
 			a.r.flushInvalid()
 		}
@@ -796,28 +812,41 @@ func (a *App) updateIME() {
 	if a.scr.ModeName == "" {
 		want = true
 	}
+	if a.imeForce != 0 {
+		want = a.imeForce > 0 // g:ngw_ime
+	}
 	if want != a.imeEnabled {
 		// Leaving text modes: finish any composition, remember whether
 		// the input method was on and switch it off, then detach it from
 		// the window. Entering them: attach it and restore its state, so
 		// it is on again in Insert mode if it was on when Insert mode was
 		// left (unless g:ngw_ime_off_on_leave).
+		//
+		// The command line is the exception: it starts with the input
+		// method off, since what is typed there is mostly commands
+		// (":w" must not become a composition). Switching it on there
+		// is remembered for Insert mode, switching it off is not.
+		cmdline := a.imeForce == 0 && strings.HasPrefix(a.scr.ModeName, "cmdline")
 		if !want {
 			if c := win32.ImmGetContext(a.hwnd); c != 0 {
 				win32.ImmNotifyIME(c, win32.NI_COMPOSITIONSTR, win32.CPS_COMPLETE, 0)
-				a.imeWasOpen = win32.ImmGetOpenStatus(c) && !a.imeOffOnLeave
+				open := win32.ImmGetOpenStatus(c)
+				if a.imeFromCmdline {
+					a.imeWasOpen = (a.imeWasOpen || open) && !a.imeOffOnLeave
+				} else {
+					a.imeWasOpen = open && !a.imeOffOnLeave
+				}
 				win32.ImmSetOpenStatus(c, false)
 				win32.ImmReleaseContext(a.hwnd, c)
 			}
 			win32.ImmEnable(a.hwnd, false)
 		} else {
 			win32.ImmEnable(a.hwnd, true)
-			if a.imeWasOpen {
-				if c := win32.ImmGetContext(a.hwnd); c != 0 {
-					win32.ImmSetOpenStatus(c, true)
-					win32.ImmReleaseContext(a.hwnd, c)
-				}
+			if c := win32.ImmGetContext(a.hwnd); c != 0 {
+				win32.ImmSetOpenStatus(c, a.imeWasOpen && !cmdline)
+				win32.ImmReleaseContext(a.hwnd, c)
 			}
+			a.imeFromCmdline = cmdline
 		}
 		a.imeEnabled = want
 		a.imePos = win32.POINT{X: -1}

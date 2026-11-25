@@ -214,6 +214,12 @@ func (r *renderer) drawText(dc uintptr, cells []screen.Cell, row, from, to int, 
 	cw := r.fonts.CellW
 	baseline := int32(row)*r.fonts.CellH + r.fonts.Baseline
 	lastColor := screen.Color(-2)
+	setColor := func(fg screen.Color) {
+		if fg != lastColor {
+			win32.SetTextColor(dc, colorref(fg))
+			lastColor = fg
+		}
+	}
 	for c := from; c < to; {
 		cell := cells[c]
 		if cell.Text == "" || cell.Text == " " {
@@ -221,14 +227,28 @@ func (r *renderer) drawText(dc uintptr, cells []screen.Cell, row, from, to int, 
 			continue
 		}
 		wide := c+1 < len(cells) && cells[c+1].Text == ""
-		fi := r.fonts.Pick(cell.Text, wide)
+		text := glyphText(cell.Text)
+		fi := r.fonts.Pick(text, wide)
 		st0 := r.style(cell.HL, fgOverride)
+		if solo(text) {
+			// Characters outside the BMP and clusters of several code
+			// points (combining marks) are drawn on their own, at their
+			// cell: how ExtTextOutW spreads lpDx over surrogate pairs and
+			// combining marks is not something to rely on.
+			w := 1
+			if wide {
+				w = 2
+			}
+			setColor(st0.fg)
+			r.drawSolo(dc, fi, st0.v, text, int32(c)*cw, int32(w)*cw, baseline, clip)
+			c += w
+			continue
+		}
 		lastHL := cell.HL
 		r.u16, r.dx = r.u16[:0], r.dx[:0]
 		x0 := int32(-1)
 		var prev int32
 		e := c
-		single := false
 		for e < to {
 			cc := cells[e]
 			if cc.Text == "" || cc.Text == " " {
@@ -245,22 +265,22 @@ func (r *renderer) drawText(dc uintptr, cells []screen.Cell, row, from, to int, 
 			if e+1 < len(cells) && cells[e+1].Text == "" {
 				w = 2
 			}
-			if r.fonts.Pick(cc.Text, w == 2) != fi {
+			t := glyphText(cc.Text)
+			if solo(t) || r.fonts.Pick(t, w == 2) != fi {
 				break
 			}
 			slot := int32(w) * cw
 			start := len(r.u16)
-			r.u16 = appendUTF16(r.u16, cc.Text)
-			adv := r.fonts.Advance(fi, cc.Text, r.u16[start:])
+			r.u16 = appendUTF16(r.u16, t)
+			adv := r.fonts.Advance(fi, t, r.u16[start:])
 			if adv > slot+1 {
 				// Too wide for its cells (an ambiguous-width character
-				// in a Japanese font with 'ambiwidth' single, ...):
-				// draw it alone, squeezed into its cells.
+				// in a Japanese font with 'ambiwidth' single, a Nerd Font
+				// icon, ...): drawn alone, squeezed into its cells.
 				r.u16 = r.u16[:start]
 				if x0 < 0 {
-					single = true
-					c = e
-					r.u16 = appendUTF16(r.u16, cc.Text)
+					setColor(st0.fg)
+					r.drawSolo(dc, fi, st0.v, t, int32(e)*cw, slot, baseline, clip)
 					e += w
 				}
 				break
@@ -275,41 +295,38 @@ func (r *renderer) drawText(dc uintptr, cells []screen.Cell, row, from, to int, 
 			} else {
 				r.dx[len(r.dx)-1] += origin - prev
 			}
-			// The first unit of the cell carries its advance; the rest
-			// (surrogates, combining marks) get none.
-			for i := start; i < len(r.u16); i++ {
-				r.dx = append(r.dx, 0)
-			}
+			r.dx = append(r.dx, 0)
 			prev = origin
 			e += w
 		}
-		if len(r.u16) == 0 {
-			c = max(e, c+1)
-			continue
-		}
-		if st0.fg != lastColor {
-			win32.SetTextColor(dc, colorref(st0.fg))
-			lastColor = st0.fg
-		}
-		if single {
-			text := cells[c].Text
-			slot := int32(e-c) * cw
-			adv := r.fonts.Advance(fi, text, r.u16)
-			r.selectFont(dc, r.fonts.Condensed(fi, st0.v, adv, slot))
-			rc := clip
-			rc.Left, rc.Right = int32(c)*cw, int32(c)*cw+slot
-			r.dx = append(r.dx[:0], slot)
-			for i := 1; i < len(r.u16); i++ {
-				r.dx = append(r.dx, 0)
-			}
-			win32.ExtTextOut(dc, int32(c)*cw, baseline, win32.ETO_CLIPPED, &rc, r.u16, r.dx)
-		} else {
+		if len(r.u16) > 0 {
+			setColor(st0.fg)
 			r.selectFont(dc, r.fonts.Font(fi, st0.v))
 			win32.ExtTextOut(dc, x0, baseline, win32.ETO_CLIPPED, &clip, r.u16, r.dx)
+			st.TextCalls++
 		}
-		st.TextCalls++
-		c = e
+		c = max(e, c+1)
 	}
+}
+
+// drawSolo draws one cell's text by itself in the slot [x, x+slot):
+// centered if it is narrower (fallback fonts), squeezed if it is wider.
+func (r *renderer) drawSolo(dc uintptr, fi, v int, text string, x, slot, baseline int32, clip win32.RECT) {
+	r.u16 = appendUTF16(r.u16[:0], text)
+	adv := r.fonts.Advance(fi, text, r.u16)
+	h := r.fonts.Font(fi, v)
+	ox := x
+	switch {
+	case adv > slot+1:
+		h = r.fonts.Condensed(fi, v, adv, slot)
+	case adv < slot && (fi != 0 || slot > r.fonts.CellW):
+		ox += (slot - adv) / 2
+	}
+	r.selectFont(dc, h)
+	rc := clip
+	rc.Left, rc.Right = x, x+slot
+	win32.ExtTextOut(dc, ox, baseline, win32.ETO_CLIPPED, &rc, r.u16, nil)
+	st.TextCalls++
 }
 
 func appendUTF16(b []uint16, s string) []uint16 {
