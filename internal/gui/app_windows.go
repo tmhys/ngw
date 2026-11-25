@@ -645,23 +645,28 @@ func wndProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 }
 
 // present asks Windows to repaint the rows drawn since the last frame and
-// the old and new cursor cells, as one rectangle. (Drawing to the window
-// right here with GetDC was measured to cost several times more: outside
-// WM_PAINT, DWM updates the window synchronously on every ReleaseDC.)
+// the old and new cursor cells. Each is invalidated on its own: Windows
+// keeps the update region as a region, so a changed row at the bottom and
+// the cursor at the top do not make everything in between repaint (one
+// bounding rectangle was measured 25-40% slower while scrolling).
+// Drawing to the window right here with GetDC instead of waiting for
+// WM_PAINT was measured slower still: DWM then updates the window
+// synchronously on every ReleaseDC.
 func (a *App) present(cursors ...win32.RECT) {
-	rc, ok := a.r.takeInvalid()
-	for _, c := range cursors {
+	if rc, ok := a.r.takeInvalid(); ok {
+		win32.InvalidateRect(a.hwnd, &rc)
+	}
+	for i, c := range cursors {
 		if c.Right <= c.Left || c.Bottom <= c.Top {
 			continue
 		}
-		if !ok {
-			rc, ok = c, true
-			continue
+		dup := false
+		for _, d := range cursors[:i] {
+			dup = dup || d == c
 		}
-		rc = win32.RECT{Left: min(rc.Left, c.Left), Top: min(rc.Top, c.Top), Right: max(rc.Right, c.Right), Bottom: max(rc.Bottom, c.Bottom)}
-	}
-	if ok {
-		win32.InvalidateRect(a.hwnd, &rc)
+		if !dup {
+			win32.InvalidateRect(a.hwnd, &c)
+		}
 	}
 }
 
