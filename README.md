@@ -42,26 +42,88 @@
 ng と同じく、**画面は Neovim が描いたものだけ**を表示します（`ext_linegrid` のみ）。
 GUI 独自のタブ・メニュー・サイドバーはありません。ターミナルで動くものはそのまま動きます。
 
+## ベンチマーク
+
+GitHub Actions の Windows Server 2025 VM（4 vCPU、GPU なし）3 台で、[Nvy](https://github.com/RMichelsen/Nvy) と
+[nvim-qt](https://github.com/equalsraf/neovim-qt) と比べた結果です（2026-11-25、Neovim 0.12.6）。
+値は GUI プロセスが使った CPU 時間（ms、CPU サイクル数から換算）で、**小さいほど軽い**です。
+各 GUI を 1 周ずつ順番を入れ替えながら 5 周し、その中央値です。
+
+**スクロール**：約 6,000 行のファイルを 1 行ずつ 2,000 回（キーを押しっぱなしにした速さ、毎秒 125 回）
+
+| VM | **ngw** | Nvy | nvim-qt※ |
+|---|---:|---:|---:|
+| 1 | **973** | 2,369 | 1,833 |
+| 2 | **879** | 2,908 | 1,774 |
+| 3 | **621** | 1,579 | 1,305 |
+
+**全面再描画**：カラースキームの切り替え 100 回
+
+| VM | **ngw** | Nvy | nvim-qt※ |
+|---|---:|---:|---:|
+| 1 | **110** | 479 | 416 |
+| 2 | **103** | 221 | 495 |
+| 3 | **71** | 344 | 361 |
+
+起動時間（起動から Neovim の UIEnter まで）とメモリ使用量（GUI プロセスのワーキングセット）も
+ngw が最小でした（約 90〜120 ms、約 16 MB。Nvy は約 25 MB、nvim-qt は約 48 MB）。
+
+注意：
+
+- **GPU のない VM での結果**です。GPU で描画する Nvy（Direct2D）は、GPU のある PC では差が縮まる
+  可能性があります。Neovide は GPU がないと CPU で描画することになり公平に比べられないため、除外しました。
+- ※ nvim-qt は 100×30 の指定に従わず 56×36（約 3 分の 2 のセル数）で描いています。
+- キーを押してから画面に出るまでの遅延（体感の速さ）は測っていません。
+- 同じ exe を 2 つ並べて測ったときの差は ±1% 以内でした。
+- 手順は [bench/bench.ps1](bench/bench.ps1)、[.github/workflows/bench.yml](.github/workflows/bench.yml)。
+  Actions の bench ワークフローから誰でも再実行できます。
+
 ## インストール
 
-1. Neovim を入れる（0.10 以降推奨）
+### 1. Neovim を入れる（0.10 以降）
 
-   ```powershell
-   winget install Neovim.Neovim
-   ```
+PowerShell で：
 
-2. `ngw.exe` を入手する
-   - GitHub Actions の成果物（`ngw-windows-amd64`）をダウンロード、または
-   - 自分でビルド（Go 1.24 以上）：
+```powershell
+winget install Neovim.Neovim
+```
 
-     ```powershell
-     .\build.ps1
-     ```
+### 2. ngw.exe をダウンロードする
 
-     Linux/macOS からのクロスビルドは `make`。
+1. [Actions の ci ワークフロー](https://github.com/tmhys/ngw/actions/workflows/ci.yml) を開き、
+   一番上の緑のチェックの付いた実行をクリック
+2. ページ下部の **Artifacts** にある `ngw-windows-amd64` をクリックしてダウンロード
+   （GitHub へのログインが必要です）
+3. zip を展開し、中の `ngw.exe`・`LICENSE`・`LICENSE.ng` を好きなフォルダ
+   （例：`%LOCALAPPDATA%\Programs\ngw`）に置く
 
-3. `ngw.exe` を好きな場所に置いて実行。`nvim.exe` は PATH、winget、scoop、
-   `C:\Program Files\Neovim` から自動で探します。
+自分でビルドする場合（Go 1.24 以上）：
+
+```powershell
+git clone https://github.com/tmhys/ngw
+cd ngw
+.\build.ps1
+```
+
+`dist\ngw.exe` ができます。Linux/macOS からのクロスビルドは `make`。
+
+### 3. 起動する
+
+`ngw.exe` をダブルクリックします。`nvim.exe` は PATH・winget・scoop・
+`C:\Program Files\Neovim` から自動で探します。
+
+- 初回は **「Windows によって PC が保護されました」**（SmartScreen）と出ることがあります。
+  ngw.exe にはコード署名がないためです。「詳細情報」→「実行」で起動できます。
+- ファイルを開くには、ファイルを ngw のウィンドウにドラッグ＆ドロップするか、
+  エクスプローラーでファイルを右クリック →「プログラムから開く」→「別のアプリを選択」→ ngw.exe を選びます。
+- コマンドラインから使うなら、置いたフォルダを PATH に追加します：
+
+  ```powershell
+  $dir = "$env:LOCALAPPDATA\Programs\ngw"
+  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dir", "User")
+  ```
+
+  新しく開いた PowerShell で `ngw ファイル名` で起動できます。
 
 ## 使い方
 
