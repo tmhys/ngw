@@ -10,6 +10,22 @@ param([string]$Out = "results", [string]$File = "bench\sample.txt",
       [string]$Only = "", [int]$Repeat = 3, [int]$Startups = 5)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+# CPU cycles actually used. GetProcessTimes (TotalProcessorTime) charges
+# whole 15.6 ms clock ticks to whichever thread is running when the tick
+# fires, which badly misjudges programs that wake often for a short time
+# (exactly what a GUI following a held key does). Cycle counts do not
+# sample: they add up what each thread really ran.
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public static class Cyc {
+  [DllImport("kernel32.dll")] public static extern bool QueryProcessCycleTime(IntPtr h, out ulong c);
+  [DllImport("kernel32.dll")] public static extern IntPtr OpenThread(int access, bool inherit, int id);
+  [DllImport("kernel32.dll")] public static extern bool QueryThreadCycleTime(IntPtr h, out ulong c);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+}
+"@
+$mhz = [double](Get-CimInstance Win32_Processor | Select-Object -First 1).MaxClockSpeed
+Write-Host "CPU: $((Get-CimInstance Win32_Processor | Select-Object -First 1).Name), $mhz MHz, $([Environment]::ProcessorCount) logical"
 
 $root = (Resolve-Path ".").Path
 $init = Join-Path $root "bench\init.lua"
@@ -67,13 +83,18 @@ function Launch($g, $dir, $mode) {
 }
 function Cpu($p) {
   $p.Refresh()
-  @{ user = $p.UserProcessorTime.TotalMilliseconds; kernel = $p.PrivilegedProcessorTime.TotalMilliseconds }
+  $c = [uint64]0
+  [Cyc]::QueryProcessCycleTime($p.Handle, [ref]$c) | Out-Null
+  @{ user = $p.UserProcessorTime.TotalMilliseconds; kernel = $p.PrivilegedProcessorTime.TotalMilliseconds; cyc = [double]$c }
 }
 function Threads($p) {
   $p.Refresh()
   $h = @{}
   foreach ($t in $p.Threads) {
-    try { $h[$t.Id] = @{ u = $t.UserProcessorTime.TotalMilliseconds; k = $t.PrivilegedProcessorTime.TotalMilliseconds } } catch {}
+    $c = [uint64]0
+    $th = [Cyc]::OpenThread(0x0800, $false, $t.Id)   # THREAD_QUERY_LIMITED_INFORMATION
+    if ($th -ne [IntPtr]::Zero) { [Cyc]::QueryThreadCycleTime($th, [ref]$c) | Out-Null; [Cyc]::CloseHandle($th) | Out-Null }
+    $h[$t.Id] = @{ c = [double]$c }
   }
   return $h
 }
@@ -99,10 +120,10 @@ function Workloads($g, $dir, $shots) {
   $c1 = Cpu $p
   $th1 = Threads $p
   $tl = foreach ($id in $th1.Keys) {
-    $a = $th1[$id]; $b = if ($th0.ContainsKey($id)) { $th0[$id] } else { @{ u = 0; k = 0 } }
-    [pscustomobject]@{ id = $id; u = [math]::Round($a.u - $b.u); k = [math]::Round($a.k - $b.k) }
+    $b = if ($th0.ContainsKey($id)) { $th0[$id].c } else { 0 }
+    [pscustomobject]@{ id = $id; ms = ($th1[$id].c - $b) / ($mhz * 1000) }
   }
-  Write-Host "threads $($g.name): $(@($th1.Keys).Count) total; busiest (user/kernel ms): $(($tl | Sort-Object { $_.u + $_.k } -Descending | Select-Object -First 5 | ForEach-Object { "$($_.id)=$($_.u)/$($_.k)" }) -join ' ')"
+  Write-Host "threads $($g.name): $(@($th1.Keys).Count) total; busiest (ms from cycles): $(($tl | Sort-Object ms -Descending | Select-Object -First 5 | ForEach-Object { "$($_.id)=$([math]::Round($_.ms))" }) -join ' ')"
   if ($shots) { Shot (Join-Path $Out "$($g.name)-scroll.png") }
   New-Item -ItemType File (Join-Path $dir "go_redraw") | Out-Null
   WaitFile (Join-Path $dir "redraw_done.json") 180 | Out-Null
@@ -116,6 +137,7 @@ function Workloads($g, $dir, $shots) {
     mem = $m; grid = "$($s.columns)x$($s.lines)"; kcells = [double]$s.columns * [double]$s.lines / 1000
     scroll_user = $c1.user - $c0.user; scroll_kernel = $c1.kernel - $c0.kernel
     redraw_user = $c2.user - $c1.user; redraw_kernel = $c2.kernel - $c1.kernel
+    scroll_cyc_ms = ($c1.cyc - $c0.cyc) / ($mhz * 1000); redraw_cyc_ms = ($c2.cyc - $c1.cyc) / ($mhz * 1000)
   }
 }
 
@@ -164,6 +186,7 @@ foreach ($name in $state.Keys) {
   $r = [ordered]@{ gui = $name; startup_ms = $s.startup; working_set_mb = $null; private_mb = $null
     scroll_cpu_ms = $null; scroll_user_ms = $null; scroll_kernel_ms = $null; scroll_cpu_per_kcell = $null
     redraw_cpu_ms = $null; redraw_user_ms = $null; redraw_kernel_ms = $null; redraw_cpu_per_kcell = $null
+    scroll_cyc_ms = $null; redraw_cyc_ms = $null; scroll_cyc_runs = $null
     scroll_runs = $null; grid = $null; error = $s.error }
   if ($runs.Count -gt 0) {
     $r.working_set_mb = [math]::Round(($runs | ForEach-Object { $_.mem.ws } | Sort-Object)[0], 1)
@@ -179,16 +202,21 @@ foreach ($name in $state.Keys) {
     $r.scroll_cpu_per_kcell = [math]::Round($r.scroll_cpu_ms / $k)
     $r.redraw_cpu_per_kcell = [math]::Round($r.redraw_cpu_ms / $k)
     $r.scroll_runs = ($runs | ForEach-Object { [math]::Round($_.scroll_user + $_.scroll_kernel) }) -join "/"
+    $r.scroll_cyc_ms = Median ($runs | ForEach-Object { $_.scroll_cyc_ms })
+    $r.redraw_cyc_ms = Median ($runs | ForEach-Object { $_.redraw_cyc_ms })
+    $r.scroll_cyc_runs = ($runs | ForEach-Object { [math]::Round($_.scroll_cyc_ms) }) -join "/"
   }
   $results += [pscustomobject]$r
   Write-Host ($r | ConvertTo-Json -Compress)
 }
 
 $results | ConvertTo-Json | Set-Content (Join-Path $Out "results.json") -Encoding utf8
-$md = @("| GUI | 起動 (ms) | メモリ WS (MB) | スクロールCPU (ms) | うちuser/kernel | /1000セル | 各回の値 | 全再描画CPU (ms) | うちuser/kernel | /1000セル | グリッド | エラー |",
-        "|---|---:|---:|---:|---|---:|---|---:|---|---:|---|---|")
+$md = @("CPU時間はサイクル数から換算（$mhz MHz）。括弧内は従来の GetProcessTimes の値。",
+        "",
+        "| GUI | 起動 (ms) | メモリ WS (MB) | スクロールCPU (ms) | 各回 | 全再描画CPU (ms) | グリッド | エラー |",
+        "|---|---:|---:|---:|---|---:|---|---|")
 foreach ($r in $results) {
-  $md += "| $($r.gui) | $($r.startup_ms) | $($r.working_set_mb) | $($r.scroll_cpu_ms) | $($r.scroll_user_ms)/$($r.scroll_kernel_ms) | $($r.scroll_cpu_per_kcell) | $($r.scroll_runs) | $($r.redraw_cpu_ms) | $($r.redraw_user_ms)/$($r.redraw_kernel_ms) | $($r.redraw_cpu_per_kcell) | $($r.grid) | $($r.error) |"
+  $md += "| $($r.gui) | $($r.startup_ms) | $($r.working_set_mb) | $($r.scroll_cyc_ms) ($($r.scroll_cpu_ms)) | $($r.scroll_cyc_runs) | $($r.redraw_cyc_ms) ($($r.redraw_cpu_ms)) | $($r.grid) | $($r.error) |"
 }
 $md -join "`n" | Set-Content (Join-Path $Out "results.md") -Encoding utf8
 if ($env:GITHUB_STEP_SUMMARY) { $md -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8 }
