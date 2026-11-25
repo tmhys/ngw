@@ -1,0 +1,56 @@
+name: bench
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  bench:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Build ngw
+        run: go build -trimpath -ldflags "-s -w -H windowsgui" -o dist/ngw.exe ./cmd/ngw
+      - name: Install Neovim and the other GUIs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force tools | Out-Null
+          Invoke-WebRequest https://github.com/neovim/neovim/releases/download/stable/nvim-win64.zip -OutFile tools/nvim.zip
+          Expand-Archive tools/nvim.zip tools/nvim
+          $nvimBin = (Get-ChildItem -Recurse tools/nvim -Filter nvim.exe | Select-Object -First 1).DirectoryName
+          Add-Content $env:GITHUB_PATH $nvimBin
+          function Fetch($repo, $pattern, $dir, $exe) {
+            try {
+              gh release download -R $repo --pattern $pattern -D "tools/$dir" --clobber
+              Get-ChildItem "tools/$dir" -Filter *.zip | ForEach-Object { Expand-Archive $_.FullName "tools/$dir" -Force }
+              $e = Get-ChildItem -Recurse "tools/$dir" -Filter $exe | Select-Object -First 1
+              if ($e) { return $e.FullName }
+            } catch { Write-Host "failed to fetch $repo : $_" }
+            return ""
+          }
+          "NGW_EXE=$((Resolve-Path dist/ngw.exe).Path)" | Add-Content $env:GITHUB_ENV
+          "NVY_EXE=$(Fetch 'RMichelsen/Nvy' '*.zip' 'nvy' 'Nvy.exe')" | Add-Content $env:GITHUB_ENV
+          "NEOVIDE_EXE=$(Fetch 'neovide/neovide' 'neovide.exe.zip' 'neovide' 'neovide.exe')" | Add-Content $env:GITHUB_ENV
+          "NVIMQT_EXE=$(Fetch 'equalsraf/neovim-qt' '*.zip' 'nvimqt' 'nvim-qt.exe')" | Add-Content $env:GITHUB_ENV
+      - name: Make the sample file
+        shell: pwsh
+        run: |
+          $src = Get-ChildItem -Recurse internal -Filter *.go | Get-Content
+          $jp = "日本語のテキスト：漢字・ひらがな・カタカナ・ｶﾀｶﾅ（半角）と English が混ざった行"
+          $lines = @(); while ($lines.Count -lt 6000) { $lines += $src; $lines += $jp }
+          $lines | Set-Content bench/sample.txt -Encoding utf8
+      - name: Benchmark
+        shell: pwsh
+        run: |
+          nvim --version | Select-Object -First 1
+          ./bench/bench.ps1 -Out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results
+          path: results/
