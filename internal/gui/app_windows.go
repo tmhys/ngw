@@ -325,7 +325,6 @@ func (a *App) process() {
 		t0 = time.Now()
 	}
 	a.r.drawDirty()
-	a.r.flushInvalid()
 	if st.on {
 		st.Draw += since(t0)
 	}
@@ -338,13 +337,7 @@ func (a *App) process() {
 		win32.SetWindowText(a.hwnd, a.title)
 	}
 	nc := a.r.cursorRect()
-	if nc != oldCursor || a.curRect != nc {
-		win32.InvalidateRect(a.hwnd, &oldCursor)
-		win32.InvalidateRect(a.hwnd, &a.curRect)
-		win32.InvalidateRect(a.hwnd, &nc)
-	} else {
-		win32.InvalidateRect(a.hwnd, &nc)
-	}
+	a.present(oldCursor, a.curRect, nc)
 	a.curRect = nc
 	a.updateIME()
 	if a.uiEntered && !a.shown {
@@ -544,7 +537,7 @@ func wndProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 			// A new bitmap is drawn at once from the cells, without
 			// waiting for Neovim.
 			a.r.drawDirty()
-			a.r.flushInvalid()
+			a.present(a.curRect)
 		}
 		return 0
 	case win32.WM_DPICHANGED:
@@ -651,6 +644,40 @@ func wndProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 	return win32.DefWindowProc(hwnd, msg, wp, lp)
 }
 
+// present puts a frame on the screen right away: it copies the rows drawn
+// since the last frame and the old and new cursor cells from the bitmap
+// to the window and draws the cursor. Doing it here instead of
+// invalidating and waiting for WM_PAINT saves a message round trip per
+// frame. WM_PAINT is still used for exposure and for the preedit.
+func (a *App) present(cursors ...win32.RECT) {
+	rc, ok := a.r.takeInvalid()
+	for _, c := range cursors {
+		if c.Right <= c.Left || c.Bottom <= c.Top {
+			continue
+		}
+		if !ok {
+			rc, ok = c, true
+			continue
+		}
+		rc = win32.RECT{Left: min(rc.Left, c.Left), Top: min(rc.Top, c.Top), Right: max(rc.Right, c.Right), Bottom: max(rc.Bottom, c.Bottom)}
+	}
+	if !ok {
+		return
+	}
+	if a.pre != nil && a.pre.text != "" {
+		win32.InvalidateRect(a.hwnd, &rc) // the preedit is drawn in WM_PAINT
+		return
+	}
+	if st.on {
+		t0 := time.Now()
+		st.Paints++
+		defer func() { st.Paint += since(t0) }()
+	}
+	dc := win32.GetDC(a.hwnd)
+	a.compose(dc, rc)
+	win32.ReleaseDC(a.hwnd, dc)
+}
+
 func (a *App) paint() {
 	if st.on {
 		t0 := time.Now()
@@ -659,7 +686,13 @@ func (a *App) paint() {
 	}
 	var ps win32.PAINTSTRUCT
 	dc := win32.BeginPaint(a.hwnd, &ps)
-	rc := ps.RcPaint
+	a.compose(dc, ps.RcPaint)
+	win32.EndPaint(a.hwnd, &ps)
+}
+
+// compose copies rc from the bitmap to dc and draws the cursor or the
+// preedit over it.
+func (a *App) compose(dc uintptr, rc win32.RECT) {
 	// Parts of the client area outside the bitmap (only while it is
 	// being enlarged) get the default background.
 	if rc.Right > a.r.bw || rc.Bottom > a.r.bh {
@@ -677,7 +710,6 @@ func (a *App) paint() {
 		a.r.drawPreedit(dc, cells, a.pre.cursor)
 	}
 	a.r.font = 0
-	win32.EndPaint(a.hwnd, &ps)
 }
 
 // Keyboard

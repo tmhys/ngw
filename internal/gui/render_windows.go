@@ -121,18 +121,18 @@ func (r *renderer) scrolled(top, bot, left, right, rows int) {
 	r.invalidateRows(top, bot)
 }
 
-// flushInvalid sends the rows drawn since the last call to the window.
-func (r *renderer) flushInvalid() {
+// takeInvalid returns the area of the rows drawn since the last call.
+func (r *renderer) takeInvalid() (win32.RECT, bool) {
 	if r.invTop < 0 {
-		return
+		return win32.RECT{}, false
 	}
 	ch := r.fonts.CellH
-	rc := win32.RECT{Top: int32(r.invTop) * ch, Right: 1 << 30, Bottom: int32(r.invBot) * ch}
+	rc := win32.RECT{Top: int32(r.invTop) * ch, Right: r.bw, Bottom: int32(r.invBot) * ch}
 	if r.invBot >= r.scr.Height {
-		rc.Bottom = 1 << 30
+		rc.Bottom = r.bh
 	}
-	win32.InvalidateRect(r.hwnd, &rc)
 	r.invTop = -1
+	return rc, true
 }
 
 func (r *renderer) selectFont(dc, h uintptr) {

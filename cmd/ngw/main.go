@@ -10,6 +10,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -128,6 +129,13 @@ func main() {
 			}
 			return nvim.Start(path, cfg.args, onNotify, onRequest)
 		},
+	}
+	// One P: the UI thread waits in GetMessage and the RPC reader in
+	// ReadFile, so there is nothing to run in parallel, and idle Ps only
+	// add scheduler wake-ups (about 20% of the CPU time while scrolling,
+	// measured on three VMs). GOMAXPROCS in the environment still wins.
+	if os.Getenv("GOMAXPROCS") == "" {
+		runtime.GOMAXPROCS(1)
 	}
 	// NGW_CPUPROFILE=file writes a Go CPU profile (for benchmarks).
 	if path := os.Getenv("NGW_CPUPROFILE"); path != "" {

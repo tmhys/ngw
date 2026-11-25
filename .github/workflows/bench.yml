@@ -4,7 +4,7 @@ on:
     inputs:
       only:
         description: "GUIs to run, comma separated"
-        default: "ngw,ngw-p1,Nvy,nvim-qt"
+        default: "ngw,ngw-mp,Nvy,nvim-qt"
   push:
     branches: [main]
 jobs:
@@ -66,7 +66,7 @@ jobs:
         shell: pwsh
         run: |
           nvim --version | Select-Object -First 1
-          ./bench/bench.ps1 -Out results -Repeat 5 -Only "${{ inputs.only || 'ngw,ngw-p1,Nvy,nvim-qt' }}"
+          ./bench/bench.ps1 -Out results -Repeat 5 -Only "${{ inputs.only || 'ngw,ngw-mp,Nvy,nvim-qt' }}"
       - name: Profile ngw
         shell: pwsh
         run: |
