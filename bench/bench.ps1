@@ -58,10 +58,10 @@ function Launch($g, $dir, $mode) {
   New-Item -ItemType Directory -Force $dir | Out-Null
   $env:BENCH_OUT = $dir
   $env:BENCH_MODE = $mode
-  foreach ($k in @($g.env.Keys)) { Set-Item "Env:$k" $g.env[$k] }
+  if ($g.env) { foreach ($k in @($g.env.Keys)) { Set-Item "Env:$k" $g.env[$k] } }
   $t = NowMs
   Start-Process -FilePath $g.exe -ArgumentList $g.args | Out-Null
-  foreach ($k in @($g.env.Keys)) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
+  if ($g.env) { foreach ($k in @($g.env.Keys)) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue } }
   $ready = WaitFile (Join-Path $dir "ready.json") 60
   return [double]$ready.t - $t
 }
