@@ -1,3 +1,6 @@
+// Derived from ng (https://github.com/Shougo/ng), Copyright (c) Shougo
+// Matsushita, MIT license: see LICENSE.ng.
+
 // Package rpc implements a msgpack-rpc client for the Neovim API.
 package rpc
 

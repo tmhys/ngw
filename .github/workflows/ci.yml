@@ -13,4 +13,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ngw-windows-amd64
-          path: dist/ngw.exe
+          path: |
+            dist/ngw.exe
+            LICENSE
+            LICENSE.ng

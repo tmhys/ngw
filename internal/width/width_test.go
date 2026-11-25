@@ -1,3 +1,5 @@
+// Derived from ng (https://github.com/Shougo/ng), MIT license: see LICENSE.ng.
+
 package width
 
 import (

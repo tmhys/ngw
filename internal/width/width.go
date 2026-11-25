@@ -1,3 +1,6 @@
+// Derived from ng (https://github.com/Shougo/ng), Copyright (c) Shougo
+// Matsushita, MIT license: see LICENSE.ng.
+
 // Package width tells how many cells a character takes, for text that ng
 // lays out itself (the input method's preedit text). Text from Neovim
 // already comes in cells and does not need this.

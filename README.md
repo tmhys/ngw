@@ -7,6 +7,9 @@
 （GDI + IMM32）で書き直したものです。cgo なしの純 Go、依存ライブラリなし、
 単体 exe（約 2.6MB）で動きます。
 
+> ngw は ng とは別のプロジェクトで、ng の作者による公認・保守はありません。
+> 不具合の報告は ng ではなく、このリポジトリへお願いします。
+
 ![ngw で日本語を編集](docs/screenshots/edit.png)
 
 ## 特徴
@@ -126,4 +129,5 @@ internal/rpc, msgpack, width   ng から流用
 
 ## ライセンス
 
-MIT。ng（© Shougo Matsushita, MIT）由来部分の著作権表示は [LICENSE.ng](LICENSE.ng) にあります。
+MIT（[LICENSE](LICENSE)）。ng（© Shougo Matsushita, MIT）由来部分の著作権表示と許諾文は
+[LICENSE.ng](LICENSE.ng) にあります。ngw.exe を配布するときは、この 2 つのファイルを同梱してください。

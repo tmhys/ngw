@@ -1,3 +1,6 @@
+// Derived from ng (https://github.com/Shougo/ng), Copyright (c) Shougo
+// Matsushita, MIT license: see LICENSE.ng.
+
 // Package msgpack implements the subset of MessagePack that the Neovim
 // msgpack-rpc API uses. It depends only on the standard library.
 //
