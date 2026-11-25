@@ -19,6 +19,7 @@ $Out = (Resolve-Path $Out).Path
 
 $guis = @(
   @{ name = "ngw";     exe = $env:NGW_EXE;     proc = "ngw";     args = @("--geometry", "100x30", "--", "-u", $init, $file) },
+  @{ name = "ngw-p1";  exe = $env:NGW_EXE;     proc = "ngw";     args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "1" } },
   @{ name = "Nvy";     exe = $env:NVY_EXE;     proc = "Nvy";     args = @("--geometry=100x30", "-u", $init, $file) },
   @{ name = "Neovide"; exe = $env:NEOVIDE_EXE; proc = "neovide"; args = @("--no-fork", "--", "-u", $init, $file) },
   @{ name = "nvim-qt"; exe = $env:NVIMQT_EXE;  proc = "nvim-qt"; args = @("--", "-u", $init, $file) }
@@ -57,14 +58,24 @@ function Launch($g, $dir, $mode) {
   New-Item -ItemType Directory -Force $dir | Out-Null
   $env:BENCH_OUT = $dir
   $env:BENCH_MODE = $mode
+  foreach ($k in @($g.env.Keys)) { Set-Item "Env:$k" $g.env[$k] }
   $t = NowMs
   Start-Process -FilePath $g.exe -ArgumentList $g.args | Out-Null
+  foreach ($k in @($g.env.Keys)) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
   $ready = WaitFile (Join-Path $dir "ready.json") 60
   return [double]$ready.t - $t
 }
 function Cpu($p) {
   $p.Refresh()
   @{ user = $p.UserProcessorTime.TotalMilliseconds; kernel = $p.PrivilegedProcessorTime.TotalMilliseconds }
+}
+function Threads($p) {
+  $p.Refresh()
+  $h = @{}
+  foreach ($t in $p.Threads) {
+    try { $h[$t.Id] = @{ u = $t.UserProcessorTime.TotalMilliseconds; k = $t.PrivilegedProcessorTime.TotalMilliseconds } } catch {}
+  }
+  return $h
 }
 function Median($xs) {
   $s = @($xs | Sort-Object)
@@ -81,10 +92,17 @@ function Workloads($g, $dir, $shots) {
   $p.Refresh()
   $m = @{ ws = $p.WorkingSet64 / 1MB; priv = $p.PrivateMemorySize64 / 1MB }
   $c0 = Cpu $p
+  $th0 = Threads $p
   New-Item -ItemType File (Join-Path $dir "go_scroll") | Out-Null
   $s = WaitFile (Join-Path $dir "scroll_done.json") 180
   Start-Sleep -Seconds 1   # let the GUI finish drawing
   $c1 = Cpu $p
+  $th1 = Threads $p
+  $tl = foreach ($id in $th1.Keys) {
+    $a = $th1[$id]; $b = if ($th0.ContainsKey($id)) { $th0[$id] } else { @{ u = 0; k = 0 } }
+    [pscustomobject]@{ id = $id; u = [math]::Round($a.u - $b.u); k = [math]::Round($a.k - $b.k) }
+  }
+  Write-Host "threads $($g.name): $(@($th1.Keys).Count) total; busiest (user/kernel ms): $(($tl | Sort-Object { $_.u + $_.k } -Descending | Select-Object -First 5 | ForEach-Object { "$($_.id)=$($_.u)/$($_.k)" }) -join ' ')"
   if ($shots) { Shot (Join-Path $Out "$($g.name)-scroll.png") }
   New-Item -ItemType File (Join-Path $dir "go_redraw") | Out-Null
   WaitFile (Join-Path $dir "redraw_done.json") 180 | Out-Null
