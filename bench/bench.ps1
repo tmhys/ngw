@@ -37,6 +37,7 @@ $guis = @(
   @{ name = "ngw";     exe = $env:NGW_EXE;     proc = "ngw";     args = @("--geometry", "100x30", "--", "-u", $init, $file) },
   # A/B variants: the current build with more Ps, and an older build
   # (NGW_REF_EXE, from the workflow's "ref" input) with one P and default.
+  @{ name = "ngw-b";      exe = $env:NGW_EXE;     proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file) },   # control: the same binary again
   @{ name = "ngw-envp1";  exe = $env:NGW_EXE;     proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "1" } },
   @{ name = "ngw-mp";     exe = $env:NGW_EXE;     proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "2" } },
   @{ name = "ngw-ref-p1"; exe = $env:NGW_REF_EXE; proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "1" } },
@@ -168,7 +169,10 @@ foreach ($g in $guis) {
   } catch { $state[$g.name].error = $_.Exception.Message }
 }
 for ($i = 0; $i -lt $Repeat; $i++) {
-  foreach ($g in $guis) {
+  # Rotate the order each round, so that no GUI always runs first or last.
+  $order = @(for ($j = 0; $j -lt $guis.Count; $j++) { $guis[($j + $i) % $guis.Count] })
+  Write-Host "round $i order: $(($order | ForEach-Object name) -join ', ')"
+  foreach ($g in $order) {
     $s = $state[$g.name]
     if ($s.error) { continue }
     try {
