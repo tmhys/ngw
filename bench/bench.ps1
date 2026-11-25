@@ -35,7 +35,11 @@ $Out = (Resolve-Path $Out).Path
 
 $guis = @(
   @{ name = "ngw";     exe = $env:NGW_EXE;     proc = "ngw";     args = @("--geometry", "100x30", "--", "-u", $init, $file) },
-  @{ name = "ngw-mp";  exe = $env:NGW_EXE;     proc = "ngw";     args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "2" } },
+  # A/B variants: the current build with more Ps, and an older build
+  # (NGW_REF_EXE, from the workflow's "ref" input) with one P and default.
+  @{ name = "ngw-mp";     exe = $env:NGW_EXE;     proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "2" } },
+  @{ name = "ngw-ref-p1"; exe = $env:NGW_REF_EXE; proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "1" } },
+  @{ name = "ngw-ref-mp"; exe = $env:NGW_REF_EXE; proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "2" } },
   @{ name = "Nvy";     exe = $env:NVY_EXE;     proc = "Nvy";     args = @("--geometry=100x30", "-u", $init, $file) },
   @{ name = "Neovide"; exe = $env:NEOVIDE_EXE; proc = "neovide"; args = @("--no-fork", "--", "-u", $init, $file) },
   @{ name = "nvim-qt"; exe = $env:NVIMQT_EXE;  proc = "nvim-qt"; args = @("--", "-u", $init, $file) }
