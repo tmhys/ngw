@@ -101,12 +101,12 @@ function Workloads($g, $dir, $shots) {
   }
 }
 
-$results = @()
+# Startup first, then the workloads in rounds: every round runs each GUI
+# once, so a VM that gets faster or slower over time affects all GUIs
+# alike.
+$state = [ordered]@{}
 foreach ($g in $guis) {
-  $r = [ordered]@{ gui = $g.name; startup_ms = $null; working_set_mb = $null; private_mb = $null
-    scroll_cpu_ms = $null; scroll_user_ms = $null; scroll_kernel_ms = $null; scroll_cpu_per_kcell = $null
-    redraw_cpu_ms = $null; redraw_user_ms = $null; redraw_kernel_ms = $null; redraw_cpu_per_kcell = $null
-    scroll_runs = $null; grid = $null; error = $null }
+  $state[$g.name] = @{ g = $g; runs = @(); startup = $null; error = $null }
   try {
     if (-not $g.exe -or -not (Test-Path $g.exe)) { throw "not installed" }
     KillAll
@@ -118,19 +118,36 @@ foreach ($g in $guis) {
         Start-Sleep -Milliseconds 1500
         KillAll
       }
-      $r.startup_ms = Median $times
+      $state[$g.name].startup = Median $times
     }
-    $runs = @()
-    for ($i = 0; $i -lt $Repeat; $i++) {
+  } catch { $state[$g.name].error = $_.Exception.Message }
+}
+for ($i = 0; $i -lt $Repeat; $i++) {
+  foreach ($g in $guis) {
+    $s = $state[$g.name]
+    if ($s.error) { continue }
+    try {
       if ($i -eq $Repeat - 1 -and $env:NGW_PROFILE_DIR -and $g.name -eq "ngw") {
-        # Profile only the last run, so profiling does not skew the others.
-        $env:NGW_CPUPROFILE = Join-Path $env:NGW_PROFILE_DIR "cpu.pprof"
         $env:NGW_STATS = Join-Path $env:NGW_PROFILE_DIR "stats.json"
       }
-      $runs += Workloads $g (Join-Path $Out "$($g.name)-run$i") ($i -eq 0)
-      Remove-Item Env:NGW_CPUPROFILE, Env:NGW_STATS -ErrorAction SilentlyContinue
-      KillAll
+      $s.runs += Workloads $g (Join-Path $Out "$($g.name)-run$i") ($i -eq 0)
+    } catch {
+      $s.error = $_.Exception.Message
+      try { Shot (Join-Path $Out "$($g.name)-error.png") } catch {}
     }
+    Remove-Item Env:NGW_CPUPROFILE, Env:NGW_STATS -ErrorAction SilentlyContinue
+    KillAll
+  }
+}
+
+$results = @()
+foreach ($name in $state.Keys) {
+  $s = $state[$name]; $runs = $s.runs
+  $r = [ordered]@{ gui = $name; startup_ms = $s.startup; working_set_mb = $null; private_mb = $null
+    scroll_cpu_ms = $null; scroll_user_ms = $null; scroll_kernel_ms = $null; scroll_cpu_per_kcell = $null
+    redraw_cpu_ms = $null; redraw_user_ms = $null; redraw_kernel_ms = $null; redraw_cpu_per_kcell = $null
+    scroll_runs = $null; grid = $null; error = $s.error }
+  if ($runs.Count -gt 0) {
     $r.working_set_mb = [math]::Round(($runs | ForEach-Object { $_.mem.ws } | Sort-Object)[0], 1)
     $r.private_mb = [math]::Round(($runs | ForEach-Object { $_.mem.priv } | Sort-Object)[0], 1)
     $r.grid = $runs[0].grid
@@ -144,17 +161,13 @@ foreach ($g in $guis) {
     $r.scroll_cpu_per_kcell = [math]::Round($r.scroll_cpu_ms / $k)
     $r.redraw_cpu_per_kcell = [math]::Round($r.redraw_cpu_ms / $k)
     $r.scroll_runs = ($runs | ForEach-Object { [math]::Round($_.scroll_user + $_.scroll_kernel) }) -join "/"
-  } catch {
-    $r.error = $_.Exception.Message
-    try { Shot (Join-Path $Out "$($g.name)-error.png") } catch {}
   }
-  KillAll
   $results += [pscustomobject]$r
   Write-Host ($r | ConvertTo-Json -Compress)
 }
 
 $results | ConvertTo-Json | Set-Content (Join-Path $Out "results.json") -Encoding utf8
-$md = @("| GUI | 起動 (ms) | メモリ WS (MB) | スクロールCPU (ms) | うちuser/kernel | /1000セル | 3回の値 | 全再描画CPU (ms) | うちuser/kernel | /1000セル | グリッド | エラー |",
+$md = @("| GUI | 起動 (ms) | メモリ WS (MB) | スクロールCPU (ms) | うちuser/kernel | /1000セル | 各回の値 | 全再描画CPU (ms) | うちuser/kernel | /1000セル | グリッド | エラー |",
         "|---|---:|---:|---:|---|---:|---|---:|---|---:|---|---|")
 foreach ($r in $results) {
   $md += "| $($r.gui) | $($r.startup_ms) | $($r.working_set_mb) | $($r.scroll_cpu_ms) | $($r.scroll_user_ms)/$($r.scroll_kernel_ms) | $($r.scroll_cpu_per_kcell) | $($r.scroll_runs) | $($r.redraw_cpu_ms) | $($r.redraw_user_ms)/$($r.redraw_kernel_ms) | $($r.redraw_cpu_per_kcell) | $($r.grid) | $($r.error) |"

@@ -15,6 +15,7 @@ type stats struct {
 	Apply, Draw, Paint     time.Duration // HandleRedraw, drawing rows, WM_PAINT
 	ScrollBlits, RowsDrawn int
 	Batches, Notifications int
+	TextCalls              int
 }
 
 var st = stats{on: os.Getenv("NGW_STATS") != ""}
@@ -27,9 +28,9 @@ func writeStats() {
 		return
 	}
 	type out struct {
-		Frames, Paints, ScrollBlits, RowsDrawn, Batches  int
-		ApplyMs, DrawMs, PaintMs                         float64
-		ApplyUsPerFrame, DrawUsPerFrame, PaintUsPerPaint float64
+		Frames, Paints, ScrollBlits, RowsDrawn, Batches, TextCalls int
+		ApplyMs, DrawMs, PaintMs                                   float64
+		ApplyUsPerFrame, DrawUsPerFrame, PaintUsPerPaint           float64
 	}
 	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 	per := func(d time.Duration, n int) float64 {
@@ -39,7 +40,7 @@ func writeStats() {
 		return float64(d.Microseconds()) / float64(n)
 	}
 	b, _ := json.Marshal(out{
-		Frames: st.Frames, Paints: st.Paints, ScrollBlits: st.ScrollBlits, RowsDrawn: st.RowsDrawn, Batches: st.Batches,
+		Frames: st.Frames, Paints: st.Paints, ScrollBlits: st.ScrollBlits, RowsDrawn: st.RowsDrawn, Batches: st.Batches, TextCalls: st.TextCalls,
 		ApplyMs: ms(st.Apply), DrawMs: ms(st.Draw), PaintMs: ms(st.Paint),
 		ApplyUsPerFrame: per(st.Apply, st.Frames), DrawUsPerFrame: per(st.Draw, st.Frames), PaintUsPerPaint: per(st.Paint, st.Paints),
 	})

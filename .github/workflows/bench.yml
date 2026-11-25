@@ -3,13 +3,17 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "GUIs to run, comma separated (empty: all)"
-        default: ""
+        description: "GUIs to run, comma separated"
+        default: "ngw,Nvy,nvim-qt"
   push:
     branches: [main]
 jobs:
   bench:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        vm: [1, 2, 3]   # three separate VMs: shows how much VMs differ
     timeout-minutes: 40
     env:
       GH_TOKEN: ${{ github.token }}
@@ -62,19 +66,17 @@ jobs:
         shell: pwsh
         run: |
           nvim --version | Select-Object -First 1
-          ./bench/bench.ps1 -Out results -Only "${{ inputs.only }}"
+          ./bench/bench.ps1 -Out results -Repeat 5 -Only "${{ inputs.only || 'ngw,Nvy,nvim-qt' }}"
       - name: Profile ngw
         shell: pwsh
         run: |
           $env:NGW_PROFILE_DIR = (New-Item -ItemType Directory -Force prof).FullName
           ./bench/bench.ps1 -Out prof-run -Only ngw -Repeat 1 -Startups 0 | Out-Null
           "== stats"; Get-Content prof/stats.json
-          "== top (flat)"; go tool pprof -top -nodecount=45 prof/cpu.pprof
-          "== top (cumulative)"; go tool pprof -top -cum -nodecount=45 prof/cpu.pprof
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: bench-results
+          name: bench-results-vm${{ matrix.vm }}
           path: |
             results/
             prof/

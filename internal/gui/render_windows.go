@@ -187,21 +187,43 @@ func (r *renderer) drawRow(dc uintptr, row int) {
 	r.drawLines(dc, cells, row)
 }
 
-// drawText draws the text of cells [from, to) of a row. fgOverride, if
-// not negative, replaces every foreground color (the block cursor).
+// textStyle is what a run of text has in common: color and variant.
+// Highlights that differ only in background or lines draw text the same
+// way, so they share runs.
+type textStyle struct {
+	fg screen.Color
+	v  int
+}
+
+func (r *renderer) style(hl int, fgOverride screen.Color) textStyle {
+	a := r.scr.Attr(hl)
+	fg, _, _ := r.scr.Colors(hl)
+	if fgOverride >= 0 {
+		fg = fgOverride
+	}
+	return textStyle{fg, variantOf(a.Bold, a.Italic)}
+}
+
+// drawText draws the text of cells [from, to) of a row, with as few GDI
+// calls as possible: one ExtTextOutW per run of cells with the same text
+// style and font. Blank cells do not break a run (the per-character
+// advances skip over them), since backgrounds are drawn separately.
+// fgOverride, if not negative, replaces every foreground color (the
+// block cursor).
 func (r *renderer) drawText(dc uintptr, cells []screen.Cell, row, from, to int, clip win32.RECT, fgOverride screen.Color) {
 	cw := r.fonts.CellW
 	baseline := int32(row)*r.fonts.CellH + r.fonts.Baseline
+	lastColor := screen.Color(-2)
 	for c := from; c < to; {
 		cell := cells[c]
 		if cell.Text == "" || cell.Text == " " {
 			c++
 			continue
 		}
-		hl := cell.HL
 		wide := c+1 < len(cells) && cells[c+1].Text == ""
 		fi := r.fonts.Pick(cell.Text, wide)
-		// Collect a run of cells with the same highlight and face.
+		st0 := r.style(cell.HL, fgOverride)
+		lastHL := cell.HL
 		r.u16, r.dx = r.u16[:0], r.dx[:0]
 		x0 := int32(-1)
 		var prev int32
@@ -209,12 +231,15 @@ func (r *renderer) drawText(dc uintptr, cells []screen.Cell, row, from, to int, 
 		single := false
 		for e < to {
 			cc := cells[e]
-			if cc.Text == "" {
+			if cc.Text == "" || cc.Text == " " {
 				e++
 				continue
 			}
-			if cc.Text == " " || cc.HL != hl {
-				break
+			if cc.HL != lastHL {
+				if r.style(cc.HL, fgOverride) != st0 {
+					break
+				}
+				lastHL = cc.HL
 			}
 			w := 1
 			if e+1 < len(cells) && cells[e+1].Text == "" {
@@ -232,8 +257,9 @@ func (r *renderer) drawText(dc uintptr, cells []screen.Cell, row, from, to int, 
 				// in a Japanese font with 'ambiwidth' single, ...):
 				// draw it alone, squeezed into its cells.
 				r.u16 = r.u16[:start]
-				if e == c {
+				if x0 < 0 {
 					single = true
+					c = e
 					r.u16 = appendUTF16(r.u16, cc.Text)
 					e += w
 				}
@@ -257,34 +283,31 @@ func (r *renderer) drawText(dc uintptr, cells []screen.Cell, row, from, to int, 
 			prev = origin
 			e += w
 		}
-		if len(r.u16) == 0 && !single {
-			c++
+		if len(r.u16) == 0 {
+			c = max(e, c+1)
 			continue
 		}
-		a := r.scr.Attr(hl)
-		fg, _, _ := r.scr.Colors(hl)
-		if fgOverride >= 0 {
-			fg = fgOverride
+		if st0.fg != lastColor {
+			win32.SetTextColor(dc, colorref(st0.fg))
+			lastColor = st0.fg
 		}
-		v := variantOf(a.Bold, a.Italic)
-		win32.SetTextColor(dc, colorref(fg))
 		if single {
-			w := int32(e - c)
-			slot := w * cw
-			adv := r.fonts.Advance(fi, cell.Text, r.u16)
-			r.selectFont(dc, r.fonts.Condensed(fi, v, adv, slot))
+			text := cells[c].Text
+			slot := int32(e-c) * cw
+			adv := r.fonts.Advance(fi, text, r.u16)
+			r.selectFont(dc, r.fonts.Condensed(fi, st0.v, adv, slot))
 			rc := clip
 			rc.Left, rc.Right = int32(c)*cw, int32(c)*cw+slot
-			r.dx = r.dx[:0]
-			r.dx = append(r.dx, slot)
+			r.dx = append(r.dx[:0], slot)
 			for i := 1; i < len(r.u16); i++ {
 				r.dx = append(r.dx, 0)
 			}
 			win32.ExtTextOut(dc, int32(c)*cw, baseline, win32.ETO_CLIPPED, &rc, r.u16, r.dx)
 		} else {
-			r.selectFont(dc, r.fonts.Font(fi, v))
+			r.selectFont(dc, r.fonts.Font(fi, st0.v))
 			win32.ExtTextOut(dc, x0, baseline, win32.ETO_CLIPPED, &clip, r.u16, r.dx)
 		}
+		st.TextCalls++
 		c = e
 	}
 }
