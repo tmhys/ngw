@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -177,6 +178,7 @@ func Run(opts Options) error {
 		win32.TranslateMessage(&msg)
 		win32.DispatchMessage(&msg)
 	}
+	writeStats()
 	return nil
 }
 
@@ -284,10 +286,19 @@ func (a *App) process() {
 	for _, it := range items {
 		switch it.method {
 		case "redraw":
+			var t0 time.Time
+			if st.on {
+				t0 = time.Now()
+				st.Frames++
+				st.Batches += len(it.frame)
+			}
 			for _, batch := range it.frame {
 				if _, err := a.scr.HandleRedraw(batch); err != nil {
 					continue
 				}
+			}
+			if st.on {
+				st.Apply += since(t0)
 			}
 			a.applyOptions()
 			drew = true
@@ -309,8 +320,15 @@ func (a *App) process() {
 	if !drew {
 		return
 	}
+	var t0 time.Time
+	if st.on {
+		t0 = time.Now()
+	}
 	a.r.drawDirty()
 	a.r.flushInvalid()
+	if st.on {
+		st.Draw += since(t0)
+	}
 	if a.scr.TakeColorsChanged() {
 		_, _, b := colorParts(a.scr.DefaultBG)
 		win32.SetDarkTitleBar(a.hwnd, b < 128)
@@ -634,6 +652,11 @@ func wndProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 }
 
 func (a *App) paint() {
+	if st.on {
+		t0 := time.Now()
+		st.Paints++
+		defer func() { st.Paint += since(t0) }()
+	}
 	var ps win32.PAINTSTRUCT
 	dc := win32.BeginPaint(a.hwnd, &ps)
 	rc := ps.RcPaint

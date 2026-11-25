@@ -1,8 +1,13 @@
 # Compares Neovim GUIs on Windows: startup time, memory, and the CPU time
 # the GUI process spends drawing a scroll workload (2000 lines at 125/s,
 # like a held key) and a full-redraw workload (100 colorscheme changes).
-# Usage: .\bench\bench.ps1 -Out results   (GUIs listed in $guis below)
-param([string]$Out = "results", [string]$File = "bench\sample.txt")
+# CPU time is split into user (the program itself) and kernel (mostly
+# GDI/win32k and window management) time. Workloads run -Repeat times;
+# medians are reported.
+#
+#   .\bench\bench.ps1 -Out results [-Only ngw,Nvy] [-Repeat 3] [-Startups 5]
+param([string]$Out = "results", [string]$File = "bench\sample.txt",
+      [string]$Only = "", [int]$Repeat = 3, [int]$Startups = 5)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
@@ -13,11 +18,12 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
 
 $guis = @(
-  @{ name = "ngw";      exe = $env:NGW_EXE;    proc = "ngw";       args = @("--geometry", "100x30", "--", "-u", $init, $file) },
-  @{ name = "Nvy";      exe = $env:NVY_EXE;    proc = "Nvy";       args = @("--geometry=100x30", "-u", $init, $file) },
-  @{ name = "Neovide";  exe = $env:NEOVIDE_EXE; proc = "neovide";  args = @("--no-fork", "--", "-u", $init, $file) },
-  @{ name = "nvim-qt";  exe = $env:NVIMQT_EXE; proc = "nvim-qt";   args = @("--", "-u", $init, $file) }
+  @{ name = "ngw";     exe = $env:NGW_EXE;     proc = "ngw";     args = @("--geometry", "100x30", "--", "-u", $init, $file) },
+  @{ name = "Nvy";     exe = $env:NVY_EXE;     proc = "Nvy";     args = @("--geometry=100x30", "-u", $init, $file) },
+  @{ name = "Neovide"; exe = $env:NEOVIDE_EXE; proc = "neovide"; args = @("--no-fork", "--", "-u", $init, $file) },
+  @{ name = "nvim-qt"; exe = $env:NVIMQT_EXE;  proc = "nvim-qt"; args = @("--", "-u", $init, $file) }
 )
+if ($Only) { $names = $Only -split ','; $guis = @($guis | Where-Object { $names -contains $_.name }) }
 
 function NowMs { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
 function WaitFile($path, $sec) {
@@ -41,10 +47,10 @@ function KillAll {
 function Shot($path) {
   $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
   $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-  $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+  $gr = [System.Drawing.Graphics]::FromImage($bmp)
+  $gr.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
   $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-  $g.Dispose(); $bmp.Dispose()
+  $gr.Dispose(); $bmp.Dispose()
 }
 function Launch($g, $dir, $mode) {
   Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
@@ -56,52 +62,88 @@ function Launch($g, $dir, $mode) {
   $ready = WaitFile (Join-Path $dir "ready.json") 60
   return [double]$ready.t - $t
 }
+function Cpu($p) {
+  $p.Refresh()
+  @{ user = $p.UserProcessorTime.TotalMilliseconds; kernel = $p.PrivilegedProcessorTime.TotalMilliseconds }
+}
+function Median($xs) {
+  $s = @($xs | Sort-Object)
+  if ($s.Count -eq 0) { return $null }
+  return [math]::Round($s[[int][math]::Floor(($s.Count - 1) / 2)])
+}
+
+# One run of both workloads; returns the GUI's CPU time for each.
+function Workloads($g, $dir, $shots) {
+  Launch $g $dir "full" | Out-Null
+  Start-Sleep -Seconds 3   # let startup and the resize settle
+  $p = GuiProc $g
+  if (-not $p) { throw "GUI process not found" }
+  $p.Refresh()
+  $m = @{ ws = $p.WorkingSet64 / 1MB; priv = $p.PrivateMemorySize64 / 1MB }
+  $c0 = Cpu $p
+  New-Item -ItemType File (Join-Path $dir "go_scroll") | Out-Null
+  $s = WaitFile (Join-Path $dir "scroll_done.json") 180
+  Start-Sleep -Seconds 1   # let the GUI finish drawing
+  $c1 = Cpu $p
+  if ($shots) { Shot (Join-Path $Out "$($g.name)-scroll.png") }
+  New-Item -ItemType File (Join-Path $dir "go_redraw") | Out-Null
+  WaitFile (Join-Path $dir "redraw_done.json") 180 | Out-Null
+  Start-Sleep -Seconds 1
+  $c2 = Cpu $p
+  if ($shots) { Shot (Join-Path $Out "$($g.name)-redraw.png") }
+  New-Item -ItemType File (Join-Path $dir "go_quit") | Out-Null
+  # Let the GUI exit by itself (ngw writes its profile and stats then).
+  $p.WaitForExit(10000) | Out-Null
+  return @{
+    mem = $m; grid = "$($s.columns)x$($s.lines)"; kcells = [double]$s.columns * [double]$s.lines / 1000
+    scroll_user = $c1.user - $c0.user; scroll_kernel = $c1.kernel - $c0.kernel
+    redraw_user = $c2.user - $c1.user; redraw_kernel = $c2.kernel - $c1.kernel
+  }
+}
 
 $results = @()
 foreach ($g in $guis) {
-  $r = [ordered]@{ gui = $g.name; startup_ms = $null; working_set_mb = $null; private_mb = $null;
-    scroll_cpu_ms = $null; redraw_cpu_ms = $null; scroll_cpu_per_kcell = $null; redraw_cpu_per_kcell = $null;
-    grid = $null; error = $null }
+  $r = [ordered]@{ gui = $g.name; startup_ms = $null; working_set_mb = $null; private_mb = $null
+    scroll_cpu_ms = $null; scroll_user_ms = $null; scroll_kernel_ms = $null; scroll_cpu_per_kcell = $null
+    redraw_cpu_ms = $null; redraw_user_ms = $null; redraw_kernel_ms = $null; redraw_cpu_per_kcell = $null
+    scroll_runs = $null; grid = $null; error = $null }
   try {
     if (-not $g.exe -or -not (Test-Path $g.exe)) { throw "not installed" }
     KillAll
-    # Startup: one warm-up, then the median of 5.
-    $times = @()
-    for ($i = 0; $i -lt 6; $i++) {
-      $ms = Launch $g (Join-Path $Out "$($g.name)-startup") "startup"
-      if ($i -gt 0) { $times += $ms }
-      Start-Sleep -Milliseconds 1500
+    if ($Startups -gt 0) {
+      $times = @()
+      for ($i = 0; $i -le $Startups; $i++) {   # run 0 is a warm-up
+        $ms = Launch $g (Join-Path $Out "$($g.name)-startup") "startup"
+        if ($i -gt 0) { $times += $ms }
+        Start-Sleep -Milliseconds 1500
+        KillAll
+      }
+      $r.startup_ms = Median $times
+    }
+    $runs = @()
+    for ($i = 0; $i -lt $Repeat; $i++) {
+      if ($i -eq $Repeat - 1 -and $env:NGW_PROFILE_DIR -and $g.name -eq "ngw") {
+        # Profile only the last run, so profiling does not skew the others.
+        $env:NGW_CPUPROFILE = Join-Path $env:NGW_PROFILE_DIR "cpu.pprof"
+        $env:NGW_STATS = Join-Path $env:NGW_PROFILE_DIR "stats.json"
+      }
+      $runs += Workloads $g (Join-Path $Out "$($g.name)-run$i") ($i -eq 0)
+      Remove-Item Env:NGW_CPUPROFILE, Env:NGW_STATS -ErrorAction SilentlyContinue
       KillAll
     }
-    $r.startup_ms = [math]::Round(($times | Sort-Object)[2])
-
-    # Workloads.
-    $dir = Join-Path $Out "$($g.name)-run"
-    Launch $g $dir "full" | Out-Null
-    Start-Sleep -Seconds 3   # let startup work settle
-    $p = GuiProc $g
-    if (-not $p) { throw "GUI process not found" }
-    $p.Refresh()
-    $r.working_set_mb = [math]::Round($p.WorkingSet64 / 1MB, 1)
-    $r.private_mb = [math]::Round($p.PrivateMemorySize64 / 1MB, 1)
-    $c0 = $p.TotalProcessorTime.TotalMilliseconds
-    New-Item -ItemType File (Join-Path $dir "go_scroll") | Out-Null
-    $s = WaitFile (Join-Path $dir "scroll_done.json") 120
-    Start-Sleep -Seconds 1   # let the GUI finish drawing
-    $p.Refresh(); $c1 = $p.TotalProcessorTime.TotalMilliseconds
-    $r.scroll_cpu_ms = [math]::Round($c1 - $c0)
-    $r.grid = "$($s.columns)x$($s.lines)"
-    $kcells = [double]$s.columns * [double]$s.lines / 1000
-    Shot (Join-Path $Out "$($g.name)-scroll.png")
-    New-Item -ItemType File (Join-Path $dir "go_redraw") | Out-Null
-    WaitFile (Join-Path $dir "redraw_done.json") 120 | Out-Null
-    Start-Sleep -Seconds 1
-    $p.Refresh(); $c2 = $p.TotalProcessorTime.TotalMilliseconds
-    $r.redraw_cpu_ms = [math]::Round($c2 - $c1)
-    $r.scroll_cpu_per_kcell = [math]::Round($r.scroll_cpu_ms / $kcells)
-    $r.redraw_cpu_per_kcell = [math]::Round($r.redraw_cpu_ms / $kcells)
-    Shot (Join-Path $Out "$($g.name)-redraw.png")
-    New-Item -ItemType File (Join-Path $dir "go_quit") | Out-Null
+    $r.working_set_mb = [math]::Round(($runs | ForEach-Object { $_.mem.ws } | Sort-Object)[0], 1)
+    $r.private_mb = [math]::Round(($runs | ForEach-Object { $_.mem.priv } | Sort-Object)[0], 1)
+    $r.grid = $runs[0].grid
+    $k = $runs[0].kcells
+    $r.scroll_user_ms = Median ($runs | ForEach-Object { $_.scroll_user })
+    $r.scroll_kernel_ms = Median ($runs | ForEach-Object { $_.scroll_kernel })
+    $r.scroll_cpu_ms = Median ($runs | ForEach-Object { $_.scroll_user + $_.scroll_kernel })
+    $r.redraw_user_ms = Median ($runs | ForEach-Object { $_.redraw_user })
+    $r.redraw_kernel_ms = Median ($runs | ForEach-Object { $_.redraw_kernel })
+    $r.redraw_cpu_ms = Median ($runs | ForEach-Object { $_.redraw_user + $_.redraw_kernel })
+    $r.scroll_cpu_per_kcell = [math]::Round($r.scroll_cpu_ms / $k)
+    $r.redraw_cpu_per_kcell = [math]::Round($r.redraw_cpu_ms / $k)
+    $r.scroll_runs = ($runs | ForEach-Object { [math]::Round($_.scroll_user + $_.scroll_kernel) }) -join "/"
   } catch {
     $r.error = $_.Exception.Message
     try { Shot (Join-Path $Out "$($g.name)-error.png") } catch {}
@@ -112,10 +154,10 @@ foreach ($g in $guis) {
 }
 
 $results | ConvertTo-Json | Set-Content (Join-Path $Out "results.json") -Encoding utf8
-$md = @("| GUI | 起動 (ms, 中央値) | メモリ WS (MB) | Private (MB) | スクロールCPU (ms) | 同 /1000セル | 全再描画CPU (ms) | 同 /1000セル | グリッド | エラー |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|")
+$md = @("| GUI | 起動 (ms) | メモリ WS (MB) | スクロールCPU (ms) | うちuser/kernel | /1000セル | 3回の値 | 全再描画CPU (ms) | うちuser/kernel | /1000セル | グリッド | エラー |",
+        "|---|---:|---:|---:|---|---:|---|---:|---|---:|---|---|")
 foreach ($r in $results) {
-  $md += "| $($r.gui) | $($r.startup_ms) | $($r.working_set_mb) | $($r.private_mb) | $($r.scroll_cpu_ms) | $($r.scroll_cpu_per_kcell) | $($r.redraw_cpu_ms) | $($r.redraw_cpu_per_kcell) | $($r.grid) | $($r.error) |"
+  $md += "| $($r.gui) | $($r.startup_ms) | $($r.working_set_mb) | $($r.scroll_cpu_ms) | $($r.scroll_user_ms)/$($r.scroll_kernel_ms) | $($r.scroll_cpu_per_kcell) | $($r.scroll_runs) | $($r.redraw_cpu_ms) | $($r.redraw_user_ms)/$($r.redraw_kernel_ms) | $($r.redraw_cpu_per_kcell) | $($r.grid) | $($r.error) |"
 }
 $md -join "`n" | Set-Content (Join-Path $Out "results.md") -Encoding utf8
 if ($env:GITHUB_STEP_SUMMARY) { $md -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8 }

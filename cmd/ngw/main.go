@@ -10,6 +10,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 
@@ -127,6 +128,13 @@ func main() {
 			}
 			return nvim.Start(path, cfg.args, onNotify, onRequest)
 		},
+	}
+	// NGW_CPUPROFILE=file writes a Go CPU profile (for benchmarks).
+	if path := os.Getenv("NGW_CPUPROFILE"); path != "" {
+		if f, err := os.Create(path); err == nil {
+			pprof.StartCPUProfile(f)
+			defer func() { pprof.StopCPUProfile(); f.Close() }()
+		}
 	}
 	if err := gui.Run(opts); err != nil {
 		report("ngw: " + err.Error())

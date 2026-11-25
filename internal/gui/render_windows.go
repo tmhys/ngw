@@ -105,10 +105,12 @@ func (r *renderer) drawDirty() {
 	for _, row := range rows {
 		r.drawRow(r.dc, row)
 	}
+	st.RowsDrawn += len(rows)
 	r.invalidateRows(rows[0], rows[len(rows)-1]+1)
 }
 
 func (r *renderer) scrolled(top, bot, left, right, rows int) {
+	st.ScrollBlits++
 	cw, ch := r.fonts.CellW, r.fonts.CellH
 	x, w := int32(left)*cw, int32(right-left)*cw
 	if rows > 0 {
