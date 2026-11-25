@@ -13,8 +13,8 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
 
 $guis = @(
-  @{ name = "ngw";      exe = $env:NGW_EXE;    proc = "ngw";       args = @("--geometry", "120x40", "--", "-u", $init, $file) },
-  @{ name = "Nvy";      exe = $env:NVY_EXE;    proc = "Nvy";       args = @("--geometry=120x40", "-u", $init, $file) },
+  @{ name = "ngw";      exe = $env:NGW_EXE;    proc = "ngw";       args = @("--geometry", "100x30", "--", "-u", $init, $file) },
+  @{ name = "Nvy";      exe = $env:NVY_EXE;    proc = "Nvy";       args = @("--geometry=100x30", "-u", $init, $file) },
   @{ name = "Neovide";  exe = $env:NEOVIDE_EXE; proc = "neovide";  args = @("--no-fork", "--", "-u", $init, $file) },
   @{ name = "nvim-qt";  exe = $env:NVIMQT_EXE; proc = "nvim-qt";   args = @("--", "-u", $init, $file) }
 )
@@ -60,7 +60,8 @@ function Launch($g, $dir, $mode) {
 $results = @()
 foreach ($g in $guis) {
   $r = [ordered]@{ gui = $g.name; startup_ms = $null; working_set_mb = $null; private_mb = $null;
-    scroll_cpu_ms = $null; redraw_cpu_ms = $null; grid = $null; error = $null }
+    scroll_cpu_ms = $null; redraw_cpu_ms = $null; scroll_cpu_per_kcell = $null; redraw_cpu_per_kcell = $null;
+    grid = $null; error = $null }
   try {
     if (-not $g.exe -or -not (Test-Path $g.exe)) { throw "not installed" }
     KillAll
@@ -90,12 +91,15 @@ foreach ($g in $guis) {
     $p.Refresh(); $c1 = $p.TotalProcessorTime.TotalMilliseconds
     $r.scroll_cpu_ms = [math]::Round($c1 - $c0)
     $r.grid = "$($s.columns)x$($s.lines)"
+    $kcells = [double]$s.columns * [double]$s.lines / 1000
     Shot (Join-Path $Out "$($g.name)-scroll.png")
     New-Item -ItemType File (Join-Path $dir "go_redraw") | Out-Null
     WaitFile (Join-Path $dir "redraw_done.json") 120 | Out-Null
     Start-Sleep -Seconds 1
     $p.Refresh(); $c2 = $p.TotalProcessorTime.TotalMilliseconds
     $r.redraw_cpu_ms = [math]::Round($c2 - $c1)
+    $r.scroll_cpu_per_kcell = [math]::Round($r.scroll_cpu_ms / $kcells)
+    $r.redraw_cpu_per_kcell = [math]::Round($r.redraw_cpu_ms / $kcells)
     Shot (Join-Path $Out "$($g.name)-redraw.png")
     New-Item -ItemType File (Join-Path $dir "go_quit") | Out-Null
   } catch {
@@ -108,10 +112,10 @@ foreach ($g in $guis) {
 }
 
 $results | ConvertTo-Json | Set-Content (Join-Path $Out "results.json") -Encoding utf8
-$md = @("| GUI | 起動 (ms, 中央値) | メモリ WS (MB) | Private (MB) | スクロール中のCPU (ms) | 全再描画中のCPU (ms) | グリッド | エラー |",
-        "|---|---:|---:|---:|---:|---:|---|---|")
+$md = @("| GUI | 起動 (ms, 中央値) | メモリ WS (MB) | Private (MB) | スクロールCPU (ms) | 同 /1000セル | 全再描画CPU (ms) | 同 /1000セル | グリッド | エラー |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|")
 foreach ($r in $results) {
-  $md += "| $($r.gui) | $($r.startup_ms) | $($r.working_set_mb) | $($r.private_mb) | $($r.scroll_cpu_ms) | $($r.redraw_cpu_ms) | $($r.grid) | $($r.error) |"
+  $md += "| $($r.gui) | $($r.startup_ms) | $($r.working_set_mb) | $($r.private_mb) | $($r.scroll_cpu_ms) | $($r.scroll_cpu_per_kcell) | $($r.redraw_cpu_ms) | $($r.redraw_cpu_per_kcell) | $($r.grid) | $($r.error) |"
 }
 $md -join "`n" | Set-Content (Join-Path $Out "results.md") -Encoding utf8
 if ($env:GITHUB_STEP_SUMMARY) { $md -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8 }

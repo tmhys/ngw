@@ -57,6 +57,9 @@ vim.api.nvim_create_autocmd('UIEnter', {
       vim.defer_fn(function() vim.cmd('qall!') end, 200)
       return
     end
+    -- The same grid for every GUI (fits the runner's 1024x768 screen).
+    vim.o.columns = 100
+    vim.o.lines = 30
     await('go_scroll', function()
       local t0 = now()
       run(2000, 8, function() vim.cmd('normal! \5') end, function()
