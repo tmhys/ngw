@@ -37,6 +37,7 @@ $guis = @(
   @{ name = "ngw";     exe = $env:NGW_EXE;     proc = "ngw";     args = @("--geometry", "100x30", "--", "-u", $init, $file) },
   # A/B variants: the current build with more Ps, and an older build
   # (NGW_REF_EXE, from the workflow's "ref" input) with one P and default.
+  @{ name = "ngw-envp1";  exe = $env:NGW_EXE;     proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "1" } },
   @{ name = "ngw-mp";     exe = $env:NGW_EXE;     proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "2" } },
   @{ name = "ngw-ref-p1"; exe = $env:NGW_REF_EXE; proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "1" } },
   @{ name = "ngw-ref-mp"; exe = $env:NGW_REF_EXE; proc = "ngw"; args = @("--geometry", "100x30", "--", "-u", $init, $file); env = @{ GOMAXPROCS = "2" } },
