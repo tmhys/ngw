@@ -325,6 +325,7 @@ func (a *App) process() {
 		t0 = time.Now()
 	}
 	a.r.drawDirty()
+	a.r.flushInvalid()
 	if st.on {
 		st.Draw += since(t0)
 	}
@@ -337,7 +338,13 @@ func (a *App) process() {
 		win32.SetWindowText(a.hwnd, a.title)
 	}
 	nc := a.r.cursorRect()
-	a.present(oldCursor, a.curRect, nc)
+	if nc != oldCursor || a.curRect != nc {
+		win32.InvalidateRect(a.hwnd, &oldCursor)
+		win32.InvalidateRect(a.hwnd, &a.curRect)
+		win32.InvalidateRect(a.hwnd, &nc)
+	} else {
+		win32.InvalidateRect(a.hwnd, &nc)
+	}
 	a.curRect = nc
 	a.updateIME()
 	if a.uiEntered && !a.shown {
@@ -537,7 +544,7 @@ func wndProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 			// A new bitmap is drawn at once from the cells, without
 			// waiting for Neovim.
 			a.r.drawDirty()
-			a.present(a.curRect)
+			a.r.flushInvalid()
 		}
 		return 0
 	case win32.WM_DPICHANGED:
@@ -644,32 +651,6 @@ func wndProc(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 	return win32.DefWindowProc(hwnd, msg, wp, lp)
 }
 
-// present asks Windows to repaint the rows drawn since the last frame and
-// the old and new cursor cells. Each is invalidated on its own: Windows
-// keeps the update region as a region, so a changed row at the bottom and
-// the cursor at the top do not make everything in between repaint (one
-// bounding rectangle was measured 25-40% slower while scrolling).
-// Drawing to the window right here with GetDC instead of waiting for
-// WM_PAINT was measured slower still: DWM then updates the window
-// synchronously on every ReleaseDC.
-func (a *App) present(cursors ...win32.RECT) {
-	if rc, ok := a.r.takeInvalid(); ok {
-		win32.InvalidateRect(a.hwnd, &rc)
-	}
-	for i, c := range cursors {
-		if c.Right <= c.Left || c.Bottom <= c.Top {
-			continue
-		}
-		dup := false
-		for _, d := range cursors[:i] {
-			dup = dup || d == c
-		}
-		if !dup {
-			win32.InvalidateRect(a.hwnd, &c)
-		}
-	}
-}
-
 func (a *App) paint() {
 	if st.on {
 		t0 := time.Now()
@@ -678,13 +659,7 @@ func (a *App) paint() {
 	}
 	var ps win32.PAINTSTRUCT
 	dc := win32.BeginPaint(a.hwnd, &ps)
-	a.compose(dc, ps.RcPaint)
-	win32.EndPaint(a.hwnd, &ps)
-}
-
-// compose copies rc from the bitmap to dc and draws the cursor or the
-// preedit over it.
-func (a *App) compose(dc uintptr, rc win32.RECT) {
+	rc := ps.RcPaint
 	// Parts of the client area outside the bitmap (only while it is
 	// being enlarged) get the default background.
 	if rc.Right > a.r.bw || rc.Bottom > a.r.bh {
@@ -702,6 +677,7 @@ func (a *App) compose(dc uintptr, rc win32.RECT) {
 		a.r.drawPreedit(dc, cells, a.pre.cursor)
 	}
 	a.r.font = 0
+	win32.EndPaint(a.hwnd, &ps)
 }
 
 // Keyboard
